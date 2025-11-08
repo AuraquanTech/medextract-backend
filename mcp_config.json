@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "cursor-mcp": {
+      "command": "python",
+      "args": ["-u", "cursor_mcp_server.py"],
+      "env": {
+        "WORKSPACE_DIR": "C:/absolute/path/to/your/workspace"
+      }
+    }
+  }
+}
+
