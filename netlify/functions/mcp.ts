@@ -202,6 +202,7 @@ const PROMPTS = ["code_review", "debug_assistant", "refactor_suggestion"];
 // Router
 // ---------------------
 export const handler: Handler = async (event) => {
+  const handlerStart = Date.now();
   try {
     const { httpMethod, path } = event;
     const urlPath = (path || event.rawUrl || "").replace(/^https?:\/\/[^/]+/, "");
@@ -211,55 +212,225 @@ export const handler: Handler = async (event) => {
     
     // CORS preflight
     if (method === "OPTIONS") {
+      console.log(`[MCP] OPTIONS ${urlPath} - ${Date.now() - handlerStart}ms`);
       return { statusCode: 200, headers: { ...base }, body: "" };
     }
     
     // Origin & rate guard (with method and path context for 403 fix)
-    if (!originAllowed(origin, method, urlPath)) return { statusCode: 403, headers: { ...base }, body: "Forbidden origin" };
+    if (!originAllowed(origin, method, urlPath)) {
+      console.warn(`[MCP] 403 Forbidden - ${method} ${urlPath} from ${origin || "no-origin"}`);
+      return { statusCode: 403, headers: { ...base }, body: "Forbidden origin" };
+    }
     const gated = rateGate(event);
-    if (gated) return { ...gated, headers: { ...base } };
+    if (gated) {
+      console.warn(`[MCP] 429 Rate Limited - ${method} ${urlPath}`);
+      return { ...gated, headers: { ...base } };
+    }
 
     // Health
     if (method === "GET" && urlPath.endsWith("/mcp/health")) {
+      const t0 = Date.now();
+      const diagnostics = await tool_get_diagnostics();
+      const elapsed_ms = Date.now() - t0;
+      console.log(`[MCP] GET /mcp/health - ${elapsed_ms}ms`);
       return {
         statusCode: 200,
         headers: { "content-type": "application/json", ...base },
-        body: JSON.stringify({ ok: true, diagnostics: await tool_get_diagnostics() }),
+        body: JSON.stringify({ ok: true, diagnostics }),
       };
     }
 
-    // Manifest
-    if (method === "GET" && (urlPath.endsWith("/mcp") || urlPath.endsWith("/mcp/"))) {
+    // Manifest (optimized for ChatGPT validation)
+    if (method === "GET" && (urlPath === "/mcp" || urlPath === "/mcp/")) {
+      const t0 = Date.now();
+      const manifest = {
+        name: "cursor-mcp-netlify",
+        version: "1.1.0",
+        description: "MCP Server on Netlify - This connector is safe",
+        capabilities: {
+          tools: true,
+          resources: false,
+          prompts: false,
+        },
+        tools: mapToolsForManifest(),
+      };
+      const elapsed_ms = Date.now() - t0;
+      console.log(`[MCP] GET /mcp (manifest) - ${elapsed_ms}ms`);
       return {
         statusCode: 200,
         headers: { "content-type": "application/json", ...base },
-        body: JSON.stringify({ name: "cursor-mcp-netlify", version: "1.0", tools: mapToolsForManifest(), resources: RESOURCES, prompts: PROMPTS, workspace: WORKSPACE_ROOT }),
+        body: JSON.stringify(manifest),
       };
     }
 
-    // Tool call: POST /mcp/tool/:name
+    // JSON-RPC endpoint (POST /mcp) - for ChatGPT validation
+    if (method === "POST" && (urlPath === "/mcp" || urlPath === "/mcp/")) {
+      const t0 = Date.now();
+      let body: any;
+      try {
+        body = JSON.parse(event.body || "{}");
+      } catch (e: any) {
+        return {
+          statusCode: 400,
+          headers: { "content-type": "application/json", ...base },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: null,
+            error: { code: -32700, message: "Parse error" },
+          }),
+        };
+      }
+
+      // Handle initialize
+      if (body.method === "initialize") {
+        const elapsed_ms = Date.now() - t0;
+        console.log(`[MCP] initialize - ${elapsed_ms}ms`);
+        return {
+          statusCode: 200,
+          headers: { "content-type": "application/json", ...base },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: {
+              protocolVersion: "2024-11-05",
+              capabilities: {
+                tools: {},
+                resources: {},
+              },
+              serverInfo: {
+                name: "cursor-mcp-netlify",
+                version: "1.0.0",
+              },
+            },
+          }),
+        };
+      }
+
+      // Handle tools/list - CRITICAL for ChatGPT validation
+      if (body.method === "tools/list") {
+        const tools = Object.entries(TOOLS).map(([name, tool]) => {
+          const properties: Record<string, any> = {};
+          const required: string[] = [];
+          
+          for (const [key, type] of Object.entries(tool.params)) {
+            const isOptional = type.endsWith("?");
+            const cleanType = isOptional ? type.slice(0, -1) : type;
+            
+            let schemaType = "string";
+            if (cleanType === "boolean") schemaType = "boolean";
+            else if (cleanType === "number") schemaType = "number";
+            
+            properties[key] = { type: schemaType };
+            if (!isOptional) required.push(key);
+          }
+          
+          return {
+            name,
+            description: tool.description,
+            inputSchema: {
+              type: "object",
+              properties,
+              ...(required.length > 0 && { required }),
+            },
+          };
+        });
+        
+        const elapsed_ms = Date.now() - t0;
+        console.log(`[MCP] tools/list - ${elapsed_ms}ms - ${tools.length} tools`);
+        return {
+          statusCode: 200,
+          headers: { "content-type": "application/json", ...base },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: body.id,
+            result: { tools },
+          }),
+        };
+      }
+
+      // Handle tools/call
+      if (body.method === "tools/call") {
+        const toolName = body.params?.name;
+        const tool = TOOLS[toolName];
+        if (!tool) {
+          return {
+            statusCode: 200,
+            headers: { "content-type": "application/json", ...base },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: body.id,
+              error: { code: -32601, message: `Unknown tool: ${toolName}` },
+            }),
+          };
+        }
+        try {
+          const result = await tool.fn(body.params?.arguments || {});
+          const elapsed_ms = Date.now() - t0;
+          console.log(`[MCP] tools/call ${toolName} - ${elapsed_ms}ms`);
+          return {
+            statusCode: 200,
+            headers: { "content-type": "application/json", ...base },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: body.id,
+              result: { content: [{ type: "text", text: JSON.stringify(result) }] },
+            }),
+          };
+        } catch (e: any) {
+          const elapsed_ms = Date.now() - t0;
+          console.error(`[MCP] tools/call ${toolName} error - ${elapsed_ms}ms`, e);
+          return {
+            statusCode: 200,
+            headers: { "content-type": "application/json", ...base },
+            body: JSON.stringify({
+              jsonrpc: "2.0",
+              id: body.id,
+              error: { code: -32000, message: e?.message || String(e) },
+            }),
+          };
+        }
+      }
+
+      // Unknown method
+      return {
+        statusCode: 200,
+        headers: { "content-type": "application/json", ...base },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: body.id,
+          error: { code: -32601, message: "Method not found" },
+        }),
+      };
+    }
+
+    // Tool call: POST /mcp/tool/:name (legacy REST endpoint)
     const toolMatch = urlPath.match(/\/mcp\/tool\/([^/?#]+)/);
     if (method === "POST" && toolMatch) {
+      const t0 = Date.now();
       const name = decodeURIComponent(toolMatch[1]);
       const reg = TOOLS[name];
       if (!reg) return { statusCode: 404, headers: { ...base }, body: `Unknown tool: ${name}` };
       const body = parseJson(event.body);
       const params = (body?.params ?? {}) as any;
 
-      const t0 = Date.now();
       try {
         const result = await reg.fn(params);
         const elapsed_ms = Date.now() - t0;
+        console.log(`[MCP] REST /mcp/tool/${name} - ${elapsed_ms}ms`);
         return { statusCode: 200, headers: { "content-type": "application/json", ...base }, body: JSON.stringify({ ok: true, result, elapsed_ms }) };
       } catch (e: any) {
         const elapsed_ms = Date.now() - t0;
+        console.error(`[MCP] REST /mcp/tool/${name} error - ${elapsed_ms}ms`, e);
         return { statusCode: 200, headers: { "content-type": "application/json", ...base }, body: JSON.stringify({ ok: false, error: e?.message || String(e), elapsed_ms }) };
       }
     }
 
+    const elapsed_ms = Date.now() - handlerStart;
+    console.log(`[MCP] 404 Not Found - ${method} ${urlPath} - ${elapsed_ms}ms`);
     return { statusCode: 404, headers: { ...base }, body: "Not found" };
   } catch (e: any) {
-    console.error("mcp handler error", e);
+    const elapsed_ms = Date.now() - handlerStart;
+    console.error(`[MCP] Handler error - ${elapsed_ms}ms`, e);
     try {
       const origin = event.headers?.origin || event.headers?.Origin || event.headers?.referer || "";
       const base = corsHeaders(origin);
