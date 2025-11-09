@@ -169,25 +169,6 @@ Netlify Functions have some limitations:
 - **Memory**: 1024 MB (Hobby plan) or 3008 MB (Pro plan)
 - **Cold starts**: First request may be slower
 
-### If Netlify Doesn't Work Well
-
-If you encounter issues with Netlify, consider these alternatives:
-
-1. **Render.com** (Recommended for Python apps)
-   - You already have `render.yaml` in the repo
-   - Better Python runtime support
-   - Free tier available
-   - See `README_OAUTH.md` for Render deployment
-
-2. **Fly.io** (Good for Python apps)
-   - You already have `fly.toml` in the repo
-   - Docker-based deployment
-   - See `README_OAUTH.md` for Fly.io deployment
-
-3. **Railway** (Easy deployment)
-   - Simple Python app deployment
-   - Good free tier
-
 ---
 
 ## 🐛 Troubleshooting
