@@ -1,0 +1,4 @@
+- Rotating secrets quarterly; verify webhook keys.
+- Monitor /metrics; set alerts for circuit open, error rate, latency p95.
+- Weekly audit verification; export signed snapshots.
+- Run tests pre-merge; keep dependencies patched (dependabot/renovate).

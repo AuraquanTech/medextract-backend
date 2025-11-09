@@ -1,0 +1,7 @@
+env: staging
+log_level: INFO
+db: { dsn: "postgresql+asyncpg://app:app@db:5432/medextract" }
+redis: { url: "redis://redis:6379/0" }
+security: { jwt_secret: "${JWT_SECRET}" }
+enable_metrics: true
+enable_tracing: true

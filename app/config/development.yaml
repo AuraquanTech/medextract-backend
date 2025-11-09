@@ -1,0 +1,10 @@
+env: development
+log_level: DEBUG
+stripe: { webhook_secret: "dev", api_key: "dev" }
+twilio: { account_sid: "dev", auth_token: "dev", messaging_service_sid: "dev" }
+db: { dsn: "sqlite+aiosqlite:///./dev.db" }
+redis: { url: "redis://localhost:6379/0" }
+security:
+  jwt_secret: "dev-secret"
+enable_metrics: true
+enable_tracing: false

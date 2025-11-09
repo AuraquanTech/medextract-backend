@@ -1,0 +1,12 @@
+[
+  {
+    "type": "hipaa_compliance",
+    "status": "compliant",
+    "timestamp": "2024-01-01T00:00:00Z"
+  },
+  {
+    "type": "gdpr_compliance",
+    "status": "compliant",
+    "timestamp": "2024-01-01T00:00:00Z"
+  }
+]

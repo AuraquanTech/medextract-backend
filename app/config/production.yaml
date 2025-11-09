@@ -1,0 +1,7 @@
+env: production
+log_level: INFO
+db: { dsn: "${DATABASE_DSN}" }
+redis: { url: "${REDIS_URL}" }
+security: { jwt_secret: "${JWT_SECRET}" }
+enable_metrics: true
+enable_tracing: true

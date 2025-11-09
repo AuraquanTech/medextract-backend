@@ -1,0 +1,6 @@
+- Clean Architecture layers with DI.
+- Async FastAPI + httpx; SQLAlchemy async for DB; Redis cache.
+- DigitalEvidenceAuditor persists hash-chained logs; verification endpoint checks chain.
+- Resilience: tenacity retries + circuit breaker flag; health/ready endpoints; request IDs.
+- Observability: Prometheus metrics; OTEL hooks (pluggable).
+- Security: input validation, signed webhooks, RBAC hooks, rate limiting (gateway / middleware).

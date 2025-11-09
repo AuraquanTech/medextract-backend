@@ -1,0 +1,5 @@
+- Build: docker build -f Dockerfile -t medextractai:prod .
+- Run: docker-compose up -d
+- Migrations: python scripts/db_migrate.py
+- CI: GitHub Actions ci.yml (lint, type-check, tests, build, scan)
+- K8s: add liveness/readiness probes; HPA on CPU/mem; secrets from vault/secret manager.
