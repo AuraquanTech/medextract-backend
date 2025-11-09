@@ -1,37 +1,30 @@
 [build]
-  command = "npm ci || npm i"
-  publish = "."
+  functions = "netlify/functions"
+  publish = "public"
 
-[functions]
-  directory = "netlify/functions"
-
-# Permissive CSP headers for ChatGPT validation
-[[headers]]
-  for = "/.netlify/functions/*"
-  [headers.values]
-    # Allow unsafe-eval for ChatGPT's validation process
-    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; connect-src *; style-src 'self' 'unsafe-inline';"
-    Access-Control-Allow-Origin = "*"
-    Access-Control-Allow-Methods = "GET, POST, OPTIONS"
-    Access-Control-Allow-Headers = "Content-Type, Authorization, Origin, User-Agent"
-    X-Content-Type-Options = "nosniff"
-    X-Frame-Options = "DENY"
-
-[[headers]]
-  for = "/mcp"
-  [headers.values]
-    # Same permissive CSP for public route
-    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; connect-src *; style-src 'self' 'unsafe-inline';"
-    Access-Control-Allow-Origin = "*"
-    Access-Control-Allow-Methods = "GET, POST, OPTIONS"
-    Access-Control-Allow-Headers = "Content-Type, Authorization, Origin, User-Agent"
+# Redirect friendly path to the function
+[[redirects]]
+  from = "/mcp"
+  to = "/.netlify/functions/mcp"
+  status = 200
+  force = true
 
 [[redirects]]
   from = "/mcp/*"
-  to = "/.netlify/functions/mcp/:splat"
+  to = "/.netlify/functions/mcp"
   status = 200
+  force = true
 
-[[redirects]]
-  from = "/metrics"
-  to = "/.netlify/functions/mcp/metrics"
-  status = 200
+# Liberal headers for function responses
+[[headers]]
+  for = "/.netlify/functions/*"
+  [headers.values]
+    Access-Control-Allow-Origin = "*"
+    Access-Control-Allow-Headers = "Content-Type, Authorization, mcp-protocol-version, mcp-session-id"
+    Access-Control-Allow-Methods = "GET, POST, OPTIONS"
+    Access-Control-Max-Age = "86400"
+    Vary = "Origin"
+
+# Keep the function warm every 5 minutes
+[functions."warmup"]
+  schedule = "@every 5m"
