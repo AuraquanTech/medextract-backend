@@ -1,16 +1,20 @@
 [build]
-  command = "pip install -r requirements.txt"
+  command = "npm ci || npm i"
   publish = "."
 
 [functions]
   directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# Map both /mcp and /mcp/* to the Node function
+[[redirects]]
+  from = "/mcp"
+  to = "/.netlify/functions/mcp"
+  status = 200
+  force = true
 
 [[redirects]]
   from = "/mcp/*"
-  to = "/.netlify/functions/mcp/:splat"
+  to = "/.netlify/functions/mcp"
   status = 200
-
-[[redirects]]
-  from = "/metrics"
-  to = "/.netlify/functions/mcp/metrics"
-  status = 200
+  force = true
