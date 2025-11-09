@@ -5,6 +5,27 @@
 [functions]
   directory = "netlify/functions"
 
+# Permissive CSP headers for ChatGPT validation
+[[headers]]
+  for = "/.netlify/functions/*"
+  [headers.values]
+    # Allow unsafe-eval for ChatGPT's validation process
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; connect-src *; style-src 'self' 'unsafe-inline';"
+    Access-Control-Allow-Origin = "*"
+    Access-Control-Allow-Methods = "GET, POST, OPTIONS"
+    Access-Control-Allow-Headers = "Content-Type, Authorization, Origin, User-Agent"
+    X-Content-Type-Options = "nosniff"
+    X-Frame-Options = "DENY"
+
+[[headers]]
+  for = "/mcp"
+  [headers.values]
+    # Same permissive CSP for public route
+    Content-Security-Policy = "default-src 'self'; script-src 'self' 'unsafe-eval' 'unsafe-inline'; connect-src *; style-src 'self' 'unsafe-inline';"
+    Access-Control-Allow-Origin = "*"
+    Access-Control-Allow-Methods = "GET, POST, OPTIONS"
+    Access-Control-Allow-Headers = "Content-Type, Authorization, Origin, User-Agent"
+
 [[redirects]]
   from = "/mcp/*"
   to = "/.netlify/functions/mcp/:splat"
