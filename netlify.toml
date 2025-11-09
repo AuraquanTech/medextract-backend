@@ -27,4 +27,4 @@
 
 # Keep the function warm every 5 minutes
 [functions."warmup"]
-  schedule = "@every 5m"
+  schedule = "*/5 * * * *"
