@@ -4,17 +4,13 @@
 
 [functions]
   directory = "netlify/functions"
-  node_bundler = "esbuild"
-
-# Map both /mcp and /mcp/* to the Node function
-[[redirects]]
-  from = "/mcp"
-  to = "/.netlify/functions/mcp"
-  status = 200
-  force = true
 
 [[redirects]]
   from = "/mcp/*"
-  to = "/.netlify/functions/mcp"
+  to = "/.netlify/functions/mcp/:splat"
   status = 200
-  force = true
+
+[[redirects]]
+  from = "/metrics"
+  to = "/.netlify/functions/mcp/metrics"
+  status = 200
