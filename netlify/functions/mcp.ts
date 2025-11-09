@@ -108,12 +108,17 @@ async function readUtf8(pathAbs: string): Promise<string> {
 // ---------------------
 async function tool_read_file(params: { path: string; allow_denied_explicit?: boolean }) {
   if (!params?.path) throw new Error("Missing 'path'");
-  const abs = safeJoinWorkspace(params.path);
-  const rel = posix.join(...abs.replace(resolve(WORKSPACE_ROOT) + sep, "").split(sep));
-  if (!params.allow_denied_explicit && isDenied(rel)) throw new Error("Path denylisted");
-  const st = await fs.stat(abs).catch(() => null);
-  if (!st || !st.isFile()) throw new Error(`Not a file: ${params.path}`);
-  return await readUtf8(abs);
+  try {
+    const abs = safeJoinWorkspace(params.path);
+    const rel = posix.join(...abs.replace(resolve(WORKSPACE_ROOT) + sep, "").split(sep));
+    if (!params.allow_denied_explicit && isDenied(rel)) throw new Error("Path denylisted");
+    const st = await fs.stat(abs).catch(() => null);
+    if (!st || !st.isFile()) throw new Error(`Not a file: ${params.path}`);
+    return await readUtf8(abs);
+  } catch (e: any) {
+    // Return helpful error message for validation
+    throw new Error(`Cannot read file: ${params.path} - ${e.message}`);
+  }
 }
 
 async function tool_list_files(params: { base?: string; pattern?: string; max_results?: number; include_denied?: boolean; max_depth?: number }) {
@@ -121,37 +126,72 @@ async function tool_list_files(params: { base?: string; pattern?: string; max_re
   const pattern = params?.pattern || "**/*";
   const cap = Math.max(1, Math.min(params?.max_results ?? 2000, 5000));
   const maxDepth = params?.max_depth ?? 25;
-  const baseAbs = safeJoinWorkspace(base);
+  
+  try {
+    const baseAbs = safeJoinWorkspace(base);
+    const stats = await fs.stat(baseAbs).catch(() => null);
+    if (!stats) return []; // Workspace doesn't exist or is inaccessible
 
-  async function walk(dirAbs: string, depth: number, acc: string[]) {
-    if (depth > maxDepth || acc.length >= cap) return;
-    const entries = await fs.readdir(dirAbs, { withFileTypes: true });
-    for (const e of entries) {
-      const full = join(dirAbs, e.name);
-      const rel = posix.join(...full.replace(resolve(WORKSPACE_ROOT) + sep, "").split(sep));
-      if (e.isDirectory()) {
-        if (!isDenied(rel)) await walk(full, depth + 1, acc);
-      } else if (e.isFile()) {
-        if ((params?.include_denied || !isDenied(rel)) && minimatch(rel, pattern)) {
-          acc.push(rel);
+    async function walk(dirAbs: string, depth: number, acc: string[]) {
+      if (depth > maxDepth || acc.length >= cap) return;
+      try {
+        const entries = await fs.readdir(dirAbs, { withFileTypes: true });
+        for (const e of entries) {
           if (acc.length >= cap) break;
+          try {
+            const full = join(dirAbs, e.name);
+            const rel = posix.join(...full.replace(resolve(WORKSPACE_ROOT) + sep, "").split(sep));
+            if (e.isDirectory()) {
+              if (!isDenied(rel)) await walk(full, depth + 1, acc);
+            } else if (e.isFile()) {
+              if ((params?.include_denied || !isDenied(rel)) && minimatch(rel, pattern)) {
+                acc.push(rel);
+                if (acc.length >= cap) break;
+              }
+            }
+          } catch {
+            // Skip files we can't access
+            continue;
+          }
         }
+      } catch {
+        // Skip directories we can't access
+        return;
       }
     }
-  }
 
-  const out: string[] = [];
-  await walk(baseAbs, 0, out);
-  return out;
+    const out: string[] = [];
+    await walk(baseAbs, 0, out);
+    return out;
+  } catch (e: any) {
+    // Return empty array if workspace is inaccessible (common on Netlify)
+    console.warn(`[MCP] list_files error: ${e.message}`);
+    return [];
+  }
 }
 
 async function tool_get_diagnostics() {
-  return {
-    workspace: WORKSPACE_ROOT,
-    limits: { read: [100, 3600], write: [50, 3600], command: [20, 3600] },
-    denylist: READ_DENYLIST,
-    perf_probe_ms: 0,
-  };
+  // Fast response - no file system access needed
+  try {
+    const workspaceExists = await fs.access(WORKSPACE_ROOT).then(() => true).catch(() => false);
+    return {
+      workspace: WORKSPACE_ROOT,
+      workspace_accessible: workspaceExists,
+      limits: { read: [100, 3600], write: [50, 3600], command: [20, 3600] },
+      denylist: READ_DENYLIST,
+      perf_probe_ms: 0,
+      note: workspaceExists ? "Workspace accessible" : "Workspace not accessible (ephemeral FS on Netlify)",
+    };
+  } catch {
+    return {
+      workspace: WORKSPACE_ROOT,
+      workspace_accessible: false,
+      limits: { read: [100, 3600], write: [50, 3600], command: [20, 3600] },
+      denylist: READ_DENYLIST,
+      perf_probe_ms: 0,
+      note: "Workspace check failed (ephemeral FS on Netlify)",
+    };
+  }
 }
 
 async function tool_write_file(_params: any) {
@@ -364,16 +404,30 @@ export const handler: Handler = async (event) => {
           };
         }
         try {
-          const result = await tool.fn(body.params?.arguments || {});
+          // Add timeout protection (5 seconds max for validation)
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error("Tool execution timeout")), 5000)
+          );
+          const result = await Promise.race([
+            tool.fn(body.params?.arguments || {}),
+            timeoutPromise,
+          ]) as any;
+          
           const elapsed_ms = Date.now() - t0;
           console.log(`[MCP] tools/call ${toolName} - ${elapsed_ms}ms`);
+          
+          // Format result according to MCP spec
+          const content = typeof result === "string" 
+            ? [{ type: "text", text: result }]
+            : [{ type: "text", text: JSON.stringify(result, null, 2) }];
+          
           return {
             statusCode: 200,
             headers: { "content-type": "application/json", ...base },
             body: JSON.stringify({
               jsonrpc: "2.0",
               id: body.id,
-              result: { content: [{ type: "text", text: JSON.stringify(result) }] },
+              result: { content },
             }),
           };
         } catch (e: any) {
@@ -385,7 +439,11 @@ export const handler: Handler = async (event) => {
             body: JSON.stringify({
               jsonrpc: "2.0",
               id: body.id,
-              error: { code: -32000, message: e?.message || String(e) },
+              error: { 
+                code: -32000, 
+                message: e?.message || String(e),
+                data: { tool: toolName, elapsed_ms }
+              },
             }),
           };
         }
