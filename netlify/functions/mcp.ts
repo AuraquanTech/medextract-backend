@@ -1,342 +1,272 @@
 // netlify/functions/mcp.ts
-import type { Handler } from "@netlify/functions";
-import { Minimatch } from "minimatch";
+import { Handler } from "@netlify/functions";
+import minimatch from "minimatch";
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { buildDefaultPolicy, pathAllowed, scanForSecrets, validateWritePlan } from "./policy";
+import { ensureBranch, createFilesCommit, openPullRequest, GitHubCtx } from "./github";
+import crypto from "crypto";
 
-/**
- * ===== Runtime configuration (via env) =====
- */
-const ALLOWED_ORIGINS_RAW =
-  process.env.ALLOWED_ORIGINS ||
-  "https://chatgpt.com,https://*.chatgpt.com,https://chat.openai.com,https://*.openai.com";
+// === Config ===
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "https://chatgpt.com,https://*.chatgpt.com,https://chat.openai.com,https://*.openai.com")
+  .split(",").map(s => s.trim()).filter(Boolean);
+const REQUIRE_ORIGIN = (process.env.MCP_HTTP_REQUIRE_ORIGIN ?? "true").toLowerCase() !== "false";
+const WORKSPACE_DIR = process.env.WORKSPACE_DIR || "/opt/build/repo";
+const VALIDATION_MODE = (process.env.VALIDATION_MODE ?? "false").toLowerCase() === "true";  // relaxes some checks during connector add
+const HARD_TIMEOUT_MS = Number(process.env.HARD_TIMEOUT_MS || 8000);                        // per-request cap
+const SOFT_RETRY = Number(process.env.SOFT_RETRY || 1);                                     // light retry for transient ops
+const METRICS_SAMPLE = Number(process.env.METRICS_SAMPLE || 1);                             // 1=every request
 
-const REQUIRE_ORIGIN =
-  (process.env.MCP_HTTP_REQUIRE_ORIGIN ?? "true").toLowerCase() !== "false";
+// --- S3 audit (optional but recommended) ---
+const AUDIT_S3_BUCKET = process.env.AUDIT_S3_BUCKET || "";
+const AUDIT_S3_PREFIX = (process.env.AUDIT_S3_PREFIX || "mcp/audit").replace(/\/+$/,"");
+const AWS_ACCESS_KEY_ID = process.env.AWS_ACCESS_KEY_ID || "";
+const AWS_SECRET_ACCESS_KEY = process.env.AWS_SECRET_ACCESS_KEY || "";
+const s3 = AUDIT_S3_BUCKET && AWS_ACCESS_KEY_ID && AWS_SECRET_ACCESS_KEY 
+  ? new S3Client({ 
+      region: process.env.AWS_REGION || "us-east-1",
+      credentials: {
+        accessKeyId: AWS_ACCESS_KEY_ID,
+        secretAccessKey: AWS_SECRET_ACCESS_KEY,
+      }
+    }) 
+  : null;
 
-/**
- * During connector creation, ChatGPT's validator may not send Origin on initial GETs.
- * We allow GETs from any origin (or none) but keep POSTs gated by origin (toggleable).
- */
-const CORS_MAX_AGE = 86400;
-
-/**
- * ===== Allowlist compiler =====
- */
-const allowedOriginMatchers = ALLOWED_ORIGINS_RAW.split(",")
-  .map((s) => s.trim())
-  .filter(Boolean)
-  .map((pat) => new Minimatch(pat, { nocase: true, noglobstar: false }));
-
-function originIsAllowed(origin: string): boolean {
-  if (!origin) return false;
-  return allowedOriginMatchers.some((mm) => mm.match(origin));
-}
-
-/**
- * ===== CORS helpers =====
- */
-function corsHeadersForGet() {
-  // GET discovery endpoints must be liberal to pass validator probes
-  return {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers":
-      "Content-Type, Authorization, mcp-protocol-version, mcp-session-id",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Max-Age": String(CORS_MAX_AGE),
-    Vary: "Origin",
-  };
-}
-
-function corsHeadersForPost(origin: string) {
-  const allow = origin && (!REQUIRE_ORIGIN || originIsAllowed(origin));
-  return {
-    "Access-Control-Allow-Origin": allow ? origin : "null",
-    "Access-Control-Allow-Headers":
-      "Content-Type, Authorization, mcp-protocol-version, mcp-session-id",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Max-Age": String(CORS_MAX_AGE),
-    Vary: "Origin",
-  };
-}
-
-/**
- * ===== Minimal in-memory rate limit (IP/window) =====
- * Note: Netlify functions are stateless across invocations; this is best-effort only.
- */
-const RATE_LIMIT_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000);
-const RATE_LIMIT_MAX_REQ = Number(process.env.RATE_LIMIT_MAX_REQ || 300);
-const rl: Record<string, { t0: number; n: number }> = {};
-
-function rateLimitKey(ev: any) {
-  return (
-    ev.headers["x-nf-client-connection-ip"] ||
-    ev.headers["x-forwarded-for"] ||
-    ev.headers["client-ip"] ||
-    "unknown"
-  );
-}
-function checkRateLimit(ev: any): boolean {
-  const k = rateLimitKey(ev);
-  const now = Date.now();
-  const cur = rl[k];
-  if (!cur || now - cur.t0 > RATE_LIMIT_WINDOW_MS) {
-    rl[k] = { t0: now, n: 1 };
-    return true;
-  }
-  cur.n += 1;
-  return cur.n <= RATE_LIMIT_MAX_REQ;
-}
-
-/**
- * ===== MCP manifest (GET /mcp) =====
- * Enough to pass tool discovery. Extend as you add tools.
- */
-const MCP_MANIFEST = {
-  name: "cursor-mcp-http-bridge",
-  version: "2025-11-09",
-  capabilities: {
-    tools: true,
-    prompts: false,
-    resources: false,
-  },
-  tools: [
-    {
-      name: "get_diagnostics",
-      description:
-        "Return server diagnostics and configuration (safe for debugging).",
-      inputSchema: {
-        type: "object",
-        properties: {},
-        additionalProperties: false,
-      },
-    },
-    {
-      name: "list_files",
-      description: "List files under WORKSPACE_DIR (safe list).",
-      inputSchema: {
-        type: "object",
-        properties: {
-          pattern: { type: "string", description: "Glob pattern", default: "**/*" },
-          max: { type: "number", description: "Max results", default: 200 },
-        },
-        additionalProperties: false,
-      },
-    },
-  ],
+// === Metrics ===
+const metrics = {
+  startedAt: new Date().toISOString(),
+  requests: 0,
+  lastOrigin: "" as string,
+  lastError: "" as string
 };
 
-/**
- * ===== Utility: safe JSON parse =====
- */
-function safeParse(body: string | undefined) {
-  if (!body) return undefined;
+// === Helpers ===
+function originAllowed(origin: string): boolean {
+  if (!origin) return !REQUIRE_ORIGIN;
+  return ALLOWED_ORIGINS.some(p => minimatch(origin, p, { nocase: true }));
+}
+
+function corsHeaders(origin: string) {
+  const allow = originAllowed(origin);
+  return {
+    "access-control-allow-origin": allow ? origin : "https://chatgpt.com",
+    "access-control-allow-credentials": "true",
+    "access-control-allow-headers": "content-type, authorization, mcp-protocol-version, mcp-session-id",
+    "access-control-allow-methods": "GET, POST, OPTIONS",
+    "access-control-max-age": "86400",
+  };
+}
+
+async function audit(kind: string, payload: any) {
+  if (!s3 || !AUDIT_S3_BUCKET) return;
   try {
-    return JSON.parse(body);
-  } catch {
-    return undefined;
+    const day = new Date().toISOString().slice(0,10);
+    const id = crypto.randomUUID();
+    const key = `${AUDIT_S3_PREFIX}/${day}/${kind}/${Date.now()}_${id}.json`;
+    await s3.send(new PutObjectCommand({
+      Bucket: AUDIT_S3_BUCKET,
+      Key: key,
+      Body: Buffer.from(JSON.stringify(payload, null, 2)),
+      ContentType: "application/json"
+    }));
+  } catch (e:any) {
+    // Don't throw; keep serving requests
+    console.error("[audit] failed:", e?.message || e);
   }
 }
 
-/**
- * ===== MCP JSON-RPC helpers =====
- */
-function rpcResult(id: any, result: any) {
-  return { jsonrpc: "2.0", id, result };
-}
-function rpcError(id: any, code: number, message: string, data?: any) {
-  return { jsonrpc: "2.0", id, error: { code, message, data } };
-}
-
-/**
- * ===== Tool implementations (stubbed for validation) =====
- * Replace with real logic against your repo or workspace.
- */
-const WORKSPACE_DIR = process.env.WORKSPACE_DIR || "/opt/build/repo";
-
-async function tool_get_diagnostics() {
+function okJSON(origin: string, body: any) {
   return {
-    ok: true,
-    now: new Date().toISOString(),
-    config: {
-      REQUIRE_ORIGIN,
-      ALLOWED_ORIGINS_RAW,
-      RATE_LIMIT_WINDOW_MS,
-      RATE_LIMIT_MAX_REQ,
-      WORKSPACE_DIR,
-      env: {
-        NODE_ENV: process.env.NODE_ENV || "",
-        NETLIFY: process.env.NETLIFY || "",
-      },
-    },
+    statusCode: 200,
+    headers: { "content-type": "application/json", ...corsHeaders(origin) },
+    body: JSON.stringify(body),
+  };
+}
+function bad(status: number, message: string, origin = "") {
+  metrics.lastError = message;
+  return {
+    statusCode: status,
+    headers: { "content-type": "application/json", ...corsHeaders(origin) },
+    body: JSON.stringify({ error: message }),
   };
 }
 
-async function tool_list_files(args: any) {
-  // Keep it stubbed; Netlify's fs is limited at runtime.
-  // Return a static sample to satisfy validation quickly.
-  const { pattern = "**/*", max = 200 } = args || {};
-  return {
-    root: WORKSPACE_DIR,
-    pattern,
-    entries: [
-      { path: "README.md", size: 1234 },
-      { path: "netlify/functions/mcp.ts", size: 5678 },
-    ].slice(0, Math.max(1, Math.min(Number(max) || 200, 1000))),
-  };
+function withTimeout<T>(p: Promise<T>, ms = HARD_TIMEOUT_MS): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`timeout ${ms}ms`)), ms);
+    p.then(v => { clearTimeout(t); resolve(v); })
+     .catch(e => { clearTimeout(t); reject(e); });
+  });
 }
 
-/**
- * ===== POST router (JSON-RPC) =====
- */
-async function handleRpc(event: any) {
-  const payload = safeParse(event.body);
-  if (!payload || payload.jsonrpc !== "2.0") {
-    return rpcError(null, -32600, "Invalid Request");
+// === Handler ===
+export const handler: Handler = async (event) => {
+  const origin = event.headers?.origin || event.headers?.Origin || event.headers?.referer || "";
+  if ((metrics.requests++ % METRICS_SAMPLE) === 0) metrics.lastOrigin = origin || "";
+
+  // OPTIONS preflight
+  if (event.httpMethod === "OPTIONS") {
+    return {
+      statusCode: 200,
+      headers: corsHeaders(origin),
+      body: "",
+    };
   }
 
-  const { id, method, params } = payload;
-
-  if (method === "tools/list") {
-    return rpcResult(id, {
-      tools: MCP_MANIFEST.tools,
-    });
+  if (!VALIDATION_MODE && REQUIRE_ORIGIN && !originAllowed(origin)) {
+    return bad(403, "Forbidden origin", origin);
   }
 
-  if (method === "tools/call") {
-    // Expected: { name: string, arguments: object }
-    const name = params?.name;
-    const args = params?.arguments || {};
-    if (!name || typeof name !== "string") {
-      return rpcError(id, -32602, "Missing or invalid tool name");
-    }
-
-    try {
-      switch (name) {
-        case "get_diagnostics": {
-          const out = await tool_get_diagnostics();
-          return rpcResult(id, {
-            content: [{ type: "text", text: JSON.stringify(out) }],
-          });
-        }
-        case "list_files": {
-          const out = await tool_list_files(args);
-          return rpcResult(id, {
-            content: [{ type: "text", text: JSON.stringify(out) }],
-          });
-        }
-        default:
-          return rpcError(id, -32601, `Unknown tool: ${name}`);
-      }
-    } catch (e: any) {
-      return rpcError(id, -32603, "Internal error", {
-        message: e?.message || String(e),
+  try {
+    // --- Manifest & health ---
+    if (event.httpMethod === "GET" && event.path.endsWith("/mcp")) {
+      return okJSON(origin, {
+        tools: [
+          { name: "get_diagnostics", description: "Return server diagnostics", inputSchema: { type: "object", properties: {} } },
+          { name: "list_files", description: "List files under workspace", inputSchema: { type: "object", properties: { pattern: { type: "string" } } } },
+          { name: "read_file", description: "Read a UTF-8 text file", inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } },
+          { name: "write_file", description: "PR-only writes via GitHub App", inputSchema: { type: "object", properties: { files: { type: "array", items: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path","content"] } }, title: { type: "string" }, summary: { type: "string" } }, required: ["files"] } },
+        ],
       });
     }
-  }
-
-  // Optional: simple health RPC
-  if (method === "initialize" || method === "ping") {
-    return rpcResult(id, { ok: true });
-  }
-
-  return rpcError(id, -32601, `Unknown method: ${method}`);
-}
-
-/**
- * ===== Main handler with aggressive error capture =====
- */
-export const handler: Handler = async (event) => {
-  // Preflight quickly
-  if (event.httpMethod === "OPTIONS") {
-    const origin = event.headers?.origin || event.headers?.Origin || "";
-    const hdrs =
-      event.headers?.["access-control-request-method"]
-        ? { ...corsHeadersForPost(origin) }
-        : { ...corsHeadersForGet() };
-    return { statusCode: 200, headers: hdrs, body: "" };
-  }
-
-  // Rate limit
-  if (!checkRateLimit(event)) {
-    const origin = event.headers?.origin || "";
-    return {
-      statusCode: 200,
-      headers: { ...corsHeadersForPost(origin), "content-type": "application/json" },
-      body: JSON.stringify(rpcError(null, -32001, "Rate limit exceeded")),
-    };
-  }
-
-  try {
-    const origin = event.headers?.origin || event.headers?.Origin || "";
-
-    // ===== GET: discovery endpoints =====
-    if (event.httpMethod === "GET") {
-      // Extract path from event (Netlify uses path or rawPath)
-      const path = event.path || event.rawPath || (event as any).pathname || "";
-      const urlPath = path.replace(/^https?:\/\/[^/]+/, "").replace(/^\/\.netlify\/functions\/mcp/, "/mcp");
-      
-      // Health
-      if (urlPath.endsWith("/mcp/health") || urlPath === "/mcp/health") {
-        return {
-          statusCode: 200,
-          headers: { ...corsHeadersForGet(), "content-type": "application/json" },
-          body: JSON.stringify({ ok: true, ts: Date.now() }),
-        };
-      }
-      // Manifest
-      if (urlPath.endsWith("/mcp") || urlPath === "/mcp" || urlPath === "/mcp/") {
-        return {
-          statusCode: 200,
-          headers: { ...corsHeadersForGet(), "content-type": "application/json" },
-          body: JSON.stringify(MCP_MANIFEST),
-        };
-      }
-      // Fallback
-      return {
-        statusCode: 404,
-        headers: { ...corsHeadersForGet(), "content-type": "application/json" },
-        body: JSON.stringify({ error: "Not found" }),
-      };
+    if (event.httpMethod === "GET" && event.path.endsWith("/mcp/health")) {
+      return okJSON(origin, { ok: true, startedAt: metrics.startedAt, validationMode: VALIDATION_MODE });
+    }
+    if (event.httpMethod === "GET" && event.path.endsWith("/mcp/metrics")) {
+      return okJSON(origin, metrics);
     }
 
-    // ===== POST: JSON-RPC (tools/list, tools/call, etc.) =====
-    if (event.httpMethod === "POST") {
-      // Enforce origin for POSTs if enabled
-      if (REQUIRE_ORIGIN && !originIsAllowed(origin)) {
-        return {
-          statusCode: 200,
-          headers: { ...corsHeadersForPost(origin), "content-type": "application/json" },
-          body: JSON.stringify(rpcError(null, -32000, "Forbidden origin")),
-        };
-      }
-
-      const result = await handleRpc(event);
-      return {
-        statusCode: 200,
-        headers: { ...corsHeadersForPost(origin), "content-type": "application/json" },
-        body: JSON.stringify(result),
+    // --- JSON-RPC(ish) entrypoint ---
+    if (event.httpMethod === "POST" && event.path.endsWith("/mcp")) {
+      const body = safeJSON(event.body);
+      if (!body) return bad(400, "Invalid JSON", origin);
+      const id = body.id ?? null;
+      const wrap = async (fn: () => Promise<any>) => {
+        try {
+          const res = await withTimeout(fn());
+          return okJSON(origin, { jsonrpc: "2.0", id, result: res });
+        } catch (e:any) {
+          metrics.lastError = e?.message || String(e);
+          await audit("error", { at: Date.now(), origin, error: metrics.lastError, method: body.method });
+          return okJSON(origin, { jsonrpc: "2.0", id, error: { code: -32603, message: "Internal error", data: { detail: metrics.lastError } } });
+        }
       };
+      if (body.method === "tools/list") {
+        return okJSON(origin, { jsonrpc: "2.0", id, result: { tools: [
+          { name: "get_diagnostics", description: "Return server diagnostics" },
+          { name: "list_files", description: "List files" },
+          { name: "read_file", description: "Read file" },
+          { name: "write_file", description: "Create PR with changes" },
+        ]}});
+      }
+      if (body.method === "tools/call") {
+        const name = body.params?.name;
+        const args = body.params?.arguments || {};
+        return wrap(() => routeTool(name, args, origin));
+      }
+      return bad(400, "Unknown method", origin);
     }
 
-    // Method not allowed
-    const base = event.httpMethod === "HEAD" ? corsHeadersForGet() : corsHeadersForPost(origin);
-    return {
-      statusCode: 405,
-      headers: { ...base, "content-type": "application/json" },
-      body: JSON.stringify({ error: "Method not allowed" }),
-    };
-  } catch (error: any) {
-    // Never return 500 to the validator: shape as JSON-RPC error
-    const origin = event.headers?.origin || "";
-    console.error("[MCP] HANDLER ERROR:", error?.message || error);
-    return {
-      statusCode: 200,
-      headers: { ...corsHeadersForPost(origin), "content-type": "application/json" },
-      body: JSON.stringify(
-        rpcError(null, -32603, "Internal error", {
-          message: error?.message || String(error),
-          stack: error?.stack || "",
-        })
-      ),
-    };
+    return bad(404, "Not Found", origin);
+  } catch (e:any) {
+    // Convert accidental 500s to JSON-RPC error so ChatGPT doesn't bail
+    console.error("[MCP] Handler error:", e);
+    metrics.lastError = e?.message || "Unhandled";
+    await audit("error", { at: Date.now(), origin, error: metrics.lastError, stack: e?.stack });
+    return okJSON(origin, { jsonrpc: "2.0", id: null, error: { code: -32603, message: "Internal error", data: { detail: metrics.lastError } } });
   }
 };
+
+function safeJSON(s?: string | null) {
+  try { return s ? JSON.parse(s) : null; } catch { return null; }
+}
+
+// --- Tool router ---
+async function routeTool(name: string, args: any, origin: string) {
+  const cfg = buildDefaultPolicy();
+  if (name === "get_diagnostics") {
+    return {
+      startedAt: metrics.startedAt,
+      workspace: WORKSPACE_DIR,
+      lastOrigin: metrics.lastOrigin,
+      validationMode: VALIDATION_MODE,
+      policy: { allow: cfg.allowGlobs, deny: cfg.denyGlobs, maxFiles: cfg.maxFilesChanged, maxBytes: cfg.maxTotalBytes },
+    };
+  }
+  if (name === "list_files") {
+    // Minimal fast list: caller can pass back explicit paths they want to read.
+    const pattern = String(args?.pattern || "**/*");
+    await audit("tool_list_files", { pattern, at: Date.now() });
+    // For Netlify runtime, a full recursive walk can be expensive; respond with pattern echo.
+    return { patternEcho: pattern, note: "Use read_file for explicit files; runtime FS may be ephemeral." };
+  }
+  if (name === "read_file") {
+    const p = String(args?.path || "");
+    if (!p) return { error: "path required" };
+    const gate = pathAllowed(p, cfg);
+    if (!gate.ok) return { error: gate.reason };
+    const fs = await import("fs/promises");
+    const full = `${WORKSPACE_DIR}/${p}`.replace(/\/+/g,"/");
+    const data = await withTimeout(fs.readFile(full, "utf8"));
+    await audit("tool_read_file", { path: p, bytes: Buffer.byteLength(data, "utf8"), at: Date.now() });
+    const secretCheck = scanForSecrets(data, cfg);
+    return { path: p, content: data, secretMatches: secretCheck.ok ? [] : secretCheck.matches };
+  }
+  if (name === "write_file") {
+    // PR-only flow
+    const files = Array.isArray(args?.files) ? args.files : [];
+    if (!files.length) return { error: "files[] required" };
+    const title = String(args?.title || "MCP changes");
+    const summary = String(args?.summary || "Proposed by MCP bridge");
+
+    // Policy: paths + size + secret scan
+    for (const f of files) {
+      const gate = pathAllowed(String(f.path), cfg);
+      if (!gate.ok) return { error: gate.reason };
+      const sec = scanForSecrets(String(f.content), cfg);
+      if (!sec.ok) return { error: `Secret-like content detected in ${f.path}` };
+    }
+    const plan = files.map((f:any) => ({ path: String(f.path), contentBytes: Buffer.byteLength(String(f.content), "utf8") }));
+    const v = validateWritePlan(plan, cfg);
+    if (!v.ok) return { error: v.reason };
+    await audit("tool_write_preview", { title, summary, plan, at: Date.now() });
+
+    // If in validation mode, never create PRs.
+    if (VALIDATION_MODE) {
+      return { preview: true, note: "Validation mode: PR creation disabled", plan };
+    }
+
+    // GitHub context
+    const gh: GitHubCtx = {
+      repo: mustEnv("GITHUB_REPOSITORY"),
+      baseBranch: process.env.GITHUB_BASE_BRANCH || "main",
+      prBranchPrefix: process.env.GITHUB_PR_PREFIX || "mcp/changes",
+      token: mustEnv("GITHUB_TOKEN"),
+    };
+
+    // Open PR with retries
+    const attempt = async () => {
+      const { baseSha, branch } = await ensureBranch(gh);
+      await createFilesCommit(gh, branch, baseSha, files.map((f:any) => ({ path: f.path, content: f.content })), title);
+      const pr = await openPullRequest(gh, branch, title, summary);
+      await audit("tool_write_pr", { prNumber: pr.number, prUrl: pr.html_url, files: plan, at: Date.now() });
+      return { prNumber: pr.number, prUrl: pr.html_url, branch };
+    };
+    try {
+      return await withTimeout(attempt());
+    } catch (e:any) {
+      if (SOFT_RETRY > 0) {
+        try { return await withTimeout(attempt()); } catch {}
+      }
+      const msg = e?.message || "PR flow failed";
+      await audit("error", { at: Date.now(), origin, error: msg, tool: "write_file" });
+      return { error: msg };
+    }
+  }
+  return { error: `Unknown tool: ${name}` };
+}
+
+function mustEnv(k: string): string {
+  const v = process.env[k];
+  if (!v) throw new Error(`Missing env: ${k}`);
+  return v;
+}

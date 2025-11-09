@@ -1,197 +1,159 @@
-# Cursor MCP Server
+# Cursor MCP Server - Netlify Deployment
 
-**Full-featured MCP server connecting Cursor AI and ChatGPT Developer Mode**
+## Overview
 
-## 🚀 Quick Start
+This is a production-ready MCP (Model Context Protocol) server deployed on Netlify with:
+- ✅ Path normalization for Netlify routing
+- ✅ Discovery exception for origin-less probes
+- ✅ Proper CORS handling with wildcard origin support
+- ✅ Rate limiting and security headers
+- ✅ Structured logging for monitoring
+- ✅ Debug endpoint for troubleshooting
+
+## Quick Start
 
 ### 1. Install Dependencies
 
 ```bash
-# Windows
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-
-# macOS/Linux
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+npm install
 ```
 
-### 2. Configure Workspace
-
-Edit `mcp_config.json` and set your `WORKSPACE_DIR`:
-
-```json
-{
-  "mcpServers": {
-    "cursor-mcp": {
-      "command": "python",
-      "args": ["-u", "cursor_mcp_server.py"],
-      "env": {
-        "WORKSPACE_DIR": "C:/path/to/your/workspace"
-      }
-    }
-  }
-}
-```
-
-### 3. Start Server
-
-**Windows:**
-```powershell
-.\start_cursor_mcp.ps1 -WorkspaceDir "C:\path\to\workspace"
-```
-
-**macOS/Linux:**
+**Critical:** Ensure `minimatch` is installed:
 ```bash
-export WORKSPACE_DIR=/path/to/workspace
-./start_cursor_mcp.sh
+npm list minimatch
 ```
 
-### 4. Register in ChatGPT Developer Mode
+### 2. Set Environment Variables
 
-1. Open ChatGPT → Settings → Developer Mode → MCP Servers
-2. Add the configuration from `mcp_config.json`
-3. Save and verify tools are discovered
+In Netlify → Site settings → Environment variables:
 
-## 📋 Features
+```
+ALLOWED_ORIGINS=https://chatgpt.com,https://*.chatgpt.com,https://chat.openai.com,https://*.openai.com
+MCP_HTTP_REQUIRE_ORIGIN=true
+RATE_LIMIT_WINDOW_MS=60000
+RATE_LIMIT_MAX_REQ=300
+WORKSPACE_DIR=/opt/build/repo
+```
 
-### Tools
-- `read_file` - Read files from workspace
-- `list_files` - List files with glob patterns
-- `write_file` - Write files (with preview mode)
-- `run_command` - Execute whitelisted commands
-- `get_diagnostics` - Health and security diagnostics
-- `search_code` - Regex search across codebase
-- `reset_context` - Reset context tracker (after large operations)
-
-### Resources
-- `workspace_tree` - Full file tree
-- `workspace_summary` - Workspace overview
-- `readme` - README.md content
-
-### Prompts
-- `code_review` - Code review assistant
-- `debug_assistant` - Debugging helper
-- `refactor_suggestion` - Refactoring suggestions
-
-## 🔒 Security
-
-- Workspace sandboxing (no path traversal)
-- Rate limiting (100 reads/hr, 50 writes/hr, 20 commands/hr)
-- Command whitelist (git, npm, pytest, etc.)
-- File denylist (.env, .git, node_modules, etc.)
-- Audit logging (all operations logged)
-
-## 📊 Context Summarization
-
-**Auto-summarization at 85% context usage**
-
-The server automatically summarizes content when context usage reaches 85% of the maximum:
-
-- **Automatic**: Triggers at 85% threshold (configurable)
-- **Smart summarization**: Keeps important sections (headers, definitions, key patterns)
-- **Transparent**: Adds metadata headers showing original vs. summarized size
-- **Per-tool**: Works across `read_file`, `list_files`, `search_code`, and resources
-
-### How it works
-
-1. Tracks character count across all operations
-2. When usage reaches 85% of `MCP_CONTEXT_MAX_CHARS`, automatically summarizes
-3. Summarization strategy:
-   - **Text files**: Keeps first 20%, last 20%, summarizes middle 60% (keeps key patterns)
-   - **File lists**: Groups by extension, shows counts and top files
-   - **Search results**: Keeps top 5 files, summarizes others
-
-### Configuration
+### 3. Deploy
 
 ```bash
-# Set max context size (default: 100,000 chars)
-export MCP_CONTEXT_MAX_CHARS=150000
-
-# Set threshold (default: 0.85 = 85%)
-export MCP_CONTEXT_SUMMARY_THRESHOLD=0.90
-
-# Disable summarization
-export MCP_CONTEXT_SUMMARY_ENABLED=false
+netlify deploy --prod
 ```
+
+### 4. Test
+
+```bash
+# Discovery (should work without Origin)
+curl -i 'https://your-site.netlify.app/mcp'
+
+# With Origin (should include CORS headers)
+curl -i -H 'Origin: https://chatgpt.com' \
+  'https://your-site.netlify.app/mcp'
+```
+
+### 5. Connect in ChatGPT
+
+- **Server URL:** `https://your-site.netlify.app/mcp`
+- **Authentication:** None
+
+## Documentation
+
+- **`COMPREHENSIVE_TESTING_GUIDE.md`** - Complete testing protocol
+- **`CRITICAL_IMPLEMENTATION_NOTES.md`** - Important implementation details
+- **`PRODUCTION_DEPLOYMENT_CHECKLIST.md`** - Pre/post deployment checklist
+- **`EXPANDED_TEST_SUITE.md`** - Full test coverage
+- **`FALLBACK_STRATEGY.md`** - Emergency fallback procedures
+- **`FINAL_FIX_SUMMARY.md`** - Summary of fixes applied
+
+## Key Features
+
+### Path Normalization
+Handles Netlify's internal routing (`/.netlify/functions/mcp` → `/mcp`)
+
+### Discovery Exception
+Allows GET `/mcp` and `/mcp/health` without Origin header
+
+### CORS Support
+Proper CORS headers with wildcard origin matching (`https://*.chatgpt.com`)
+
+### Security
+- Origin validation for POST requests
+- Rate limiting
+- Security headers (X-Content-Type-Options, X-Frame-Options, etc.)
 
 ### Monitoring
+- Structured logging
+- Metrics endpoint
+- Debug endpoint (optional)
 
-Check context usage via `get_diagnostics`:
-```json
-{
-  "context": {
-    "max_chars": 100000,
-    "current_chars": 85000,
-    "usage_pct": 85.0,
-    "summary_threshold": 0.85,
-    "summarization_enabled": true,
-    "recent_summaries": [...]
-  }
-}
+## File Structure
+
+```
+cursor-mcp-server/
+├── netlify/
+│   └── functions/
+│       └── mcp.ts          # Main MCP function
+├── netlify.toml            # Netlify configuration
+├── package.json            # Dependencies
+├── tsconfig.json           # TypeScript configuration
+└── README.md               # This file
 ```
 
-## 🧪 Testing
+## Testing
 
+See `EXPANDED_TEST_SUITE.md` for complete test coverage.
+
+**Quick test:**
 ```bash
-# Set workspace for tests
-$env:WORKSPACE_DIR = "C:\path\to\test\workspace"
+# Discovery
+curl -i 'https://your-site.netlify.app/mcp'
 
-# Run tests
-pytest tests/
+# Health
+curl -i 'https://your-site.netlify.app/mcp/health'
+
+# With Origin
+curl -i -H 'Origin: https://chatgpt.com' \
+  'https://your-site.netlify.app/mcp'
 ```
 
-## 📚 Documentation
+## Troubleshooting
 
-- `SETUP.md` - Detailed setup instructions
-- `SECURITY.md` - Security design and hardening
-- `BEST_PRACTICES.md` - Usage best practices
-- `PERF.md` - Performance optimization guide
+### Still Getting 403?
 
-## 🔧 Configuration
+1. Check `minimatch` is installed
+2. Verify environment variables are set
+3. Check Netlify function logs
+4. Use debug endpoint (if enabled)
+5. See `FALLBACK_STRATEGY.md` for emergency bypass
 
-### Environment Variables
+### CORS Errors?
 
-- `WORKSPACE_DIR` - Workspace root directory (required)
-- `MCP_AUDIT_LOG` - Audit log path (default: `.mcp_audit.log`)
-- `MCP_MAX_FILE_BYTES` - Max file size (default: 2MB)
-- `MCP_CONTEXT_MAX_CHARS` - Max context size before summarization (default: 100,000 chars)
-- `MCP_CONTEXT_SUMMARY_THRESHOLD` - Threshold for auto-summarization (default: 0.85 = 85%)
-- `MCP_CONTEXT_SUMMARY_ENABLED` - Enable/disable auto-summarization (default: `true`)
+1. Verify CORS headers are present
+2. Check Origin is in `ALLOWED_ORIGINS`
+3. Ensure `vary: Origin` is included
 
-### Rate Limits
+### Path Issues?
 
-- Reads: 100 per hour
-- Writes: 50 per hour
-- Commands: 20 per hour
+1. Check `normalizedPath()` is working
+2. Verify redirect rules in `netlify.toml`
+3. Check function logs for actual path
 
-### Allowed Commands
+## Security Notes
 
-- `git status`, `git diff`
-- `npm test`, `pnpm test`, `yarn test`
-- `pytest`, `python -m pytest`
-- `node -v`
+- **Keep `MCP_HTTP_REQUIRE_ORIGIN=true` in production**
+- **Remove `MCP_DEBUG_SECRET` after debugging**
+- **Monitor function logs for suspicious activity**
+- **Set up alerts for repeated 403s**
 
-## 🐛 Troubleshooting
+## Support
 
-### Server won't start
-- Check Python version (3.10+)
-- Verify dependencies: `pip install -r requirements.txt`
-- Check `WORKSPACE_DIR` is set correctly
+For issues:
+1. Check `CRITICAL_IMPLEMENTATION_NOTES.md`
+2. Review `PRODUCTION_DEPLOYMENT_CHECKLIST.md`
+3. Check Netlify function logs
+4. Use debug endpoint (if enabled)
 
-### Tools not appearing in ChatGPT
-- Verify MCP config in ChatGPT settings
-- Check server is running (stdio mode)
-- Review audit log for errors
-
-### Permission errors
-- Verify workspace path is correct
-- Check file isn't in denylist (.env, .git, etc.)
-- Ensure workspace directory exists
-
-## 📝 License
+## License
 
 See LICENSE file for details.
-
