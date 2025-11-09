@@ -17,7 +17,7 @@ MCP Python SDK over stdio. Includes:
 
 - Health: internal self-check + perf timing in diagnostics
 
-Requires: `pip install mcp anthropic-mcp-sdk`
+Requires: `pip install mcp`
 """
 
 from __future__ import annotations

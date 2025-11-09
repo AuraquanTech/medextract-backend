@@ -12,7 +12,7 @@
    py -m venv .venv
    .\.venv\Scripts\Activate.ps1
    python -m pip install --upgrade pip
-   pip install mcp anthropic-mcp-sdk pytest
+   pip install mcp pytest
    ```
 
 ### macOS/Linux
