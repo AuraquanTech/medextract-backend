@@ -1,22 +1,16 @@
 [build]
-  # If you have no frontend build, leave command empty
-  command = ""
-  functions = "netlify/functions"
+  command = "pip install -r requirements.txt"
+  publish = "."
 
 [functions]
-  # Python runtime Netlify supports
-  python_runtime = "3.11"
+  directory = "netlify/functions"
 
-# Route all /mcp/* paths to the Python function
 [[redirects]]
   from = "/mcp/*"
   to = "/.netlify/functions/mcp/:splat"
   status = 200
-  force = true
 
-# Optional: expose /metrics too (if you want a pretty path)
 [[redirects]]
   from = "/metrics"
   to = "/.netlify/functions/mcp/metrics"
   status = 200
-  force = true
