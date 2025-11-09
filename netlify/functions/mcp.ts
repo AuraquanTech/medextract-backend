@@ -37,14 +37,32 @@ const READ_DENYLIST = [
 // ---------------------
 // Helpers
 // ---------------------
-function bad(statusCode: number, body: string) {
-  return { statusCode, body };
+function originAllowed(origin: string, method: string, path: string): boolean {
+  if (!REQUIRE_ORIGIN) return true;
+  
+  // Allow safe discovery endpoints without Origin header
+  const isSafeEndpoint = method === 'GET' && (
+    path === '/mcp' || path === '/mcp/' || path === '/mcp/health'
+  );
+  const isOptionsRequest = method === 'OPTIONS';
+  
+  if (!origin && (isSafeEndpoint || isOptionsRequest)) return true;
+  if (!origin) return false;
+  
+  return ALLOWED_ORIGINS.some((o) => origin.startsWith(o) || minimatch(origin, o));
 }
 
-function originAllowed(origin: string): boolean {
-  if (!REQUIRE_ORIGIN) return true;
-  if (!origin) return false;
-  return ALLOWED_ORIGINS.some((o) => origin.startsWith(o) || minimatch(origin, o));
+function corsHeaders(origin: string): Record<string, string> {
+  const vary = { vary: "Origin" };
+  if (origin && ALLOWED_ORIGINS.some((o) => origin.startsWith(o) || minimatch(origin, o))) {
+    return {
+      ...vary,
+      "access-control-allow-origin": origin,
+      "access-control-allow-methods": "GET,POST,OPTIONS",
+      "access-control-allow-headers": "content-type,authorization",
+    };
+  }
+  return vary;
 }
 
 function clientIp(evt: any): string {
@@ -185,39 +203,46 @@ const PROMPTS = ["code_review", "debug_assistant", "refactor_suggestion"];
 // ---------------------
 export const handler: Handler = async (event) => {
   try {
-    // Origin & rate guard
-    const origin = event.headers?.origin || event.headers?.Origin || event.headers?.referer || "";
-    if (!originAllowed(origin)) return bad(403, "Forbidden origin");
-    const gated = rateGate(event);
-    if (gated) return gated;
-
     const { httpMethod, path } = event;
     const urlPath = (path || event.rawUrl || "").replace(/^https?:\/\/[^/]+/, "");
+    const method = String(httpMethod || "").toUpperCase();
+    const origin = event.headers?.origin || event.headers?.Origin || event.headers?.referer || "";
+    const base = corsHeaders(origin);
+    
+    // CORS preflight
+    if (method === "OPTIONS") {
+      return { statusCode: 200, headers: { ...base }, body: "" };
+    }
+    
+    // Origin & rate guard (with method and path context for 403 fix)
+    if (!originAllowed(origin, method, urlPath)) return { statusCode: 403, headers: { ...base }, body: "Forbidden origin" };
+    const gated = rateGate(event);
+    if (gated) return { ...gated, headers: { ...base } };
 
     // Health
-    if (httpMethod === "GET" && urlPath.endsWith("/mcp/health")) {
+    if (method === "GET" && urlPath.endsWith("/mcp/health")) {
       return {
         statusCode: 200,
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...base },
         body: JSON.stringify({ ok: true, diagnostics: await tool_get_diagnostics() }),
       };
     }
 
     // Manifest
-    if (httpMethod === "GET" && (urlPath.endsWith("/mcp") || urlPath.endsWith("/mcp/"))) {
+    if (method === "GET" && (urlPath.endsWith("/mcp") || urlPath.endsWith("/mcp/"))) {
       return {
         statusCode: 200,
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", ...base },
         body: JSON.stringify({ name: "cursor-mcp-netlify", version: "1.0", tools: mapToolsForManifest(), resources: RESOURCES, prompts: PROMPTS, workspace: WORKSPACE_ROOT }),
       };
     }
 
     // Tool call: POST /mcp/tool/:name
     const toolMatch = urlPath.match(/\/mcp\/tool\/([^/?#]+)/);
-    if (httpMethod === "POST" && toolMatch) {
+    if (method === "POST" && toolMatch) {
       const name = decodeURIComponent(toolMatch[1]);
       const reg = TOOLS[name];
-      if (!reg) return bad(404, `Unknown tool: ${name}`);
+      if (!reg) return { statusCode: 404, headers: { ...base }, body: `Unknown tool: ${name}` };
       const body = parseJson(event.body);
       const params = (body?.params ?? {}) as any;
 
@@ -225,17 +250,23 @@ export const handler: Handler = async (event) => {
       try {
         const result = await reg.fn(params);
         const elapsed_ms = Date.now() - t0;
-        return json200({ ok: true, result, elapsed_ms });
+        return { statusCode: 200, headers: { "content-type": "application/json", ...base }, body: JSON.stringify({ ok: true, result, elapsed_ms }) };
       } catch (e: any) {
         const elapsed_ms = Date.now() - t0;
-        return json200({ ok: false, error: e?.message || String(e), elapsed_ms });
+        return { statusCode: 200, headers: { "content-type": "application/json", ...base }, body: JSON.stringify({ ok: false, error: e?.message || String(e), elapsed_ms }) };
       }
     }
 
-    return bad(404, "Not found");
+    return { statusCode: 404, headers: { ...base }, body: "Not found" };
   } catch (e: any) {
     console.error("mcp handler error", e);
-    return { statusCode: 500, body: e?.message || String(e) };
+    try {
+      const origin = event.headers?.origin || event.headers?.Origin || event.headers?.referer || "";
+      const base = corsHeaders(origin);
+      return { statusCode: 500, headers: { "content-type": "application/json", ...base }, body: JSON.stringify({ error: e?.message || String(e) }) };
+    } catch {
+      return { statusCode: 500, headers: { "content-type": "application/json" }, body: JSON.stringify({ error: e?.message || String(e) }) };
+    }
   }
 };
 
