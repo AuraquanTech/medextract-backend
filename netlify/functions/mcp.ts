@@ -16,7 +16,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { createRemoteJWKSet, jwtVerify } from "jose";
-import minimatch from "minimatch";
+import * as minimatch from "minimatch";
 import { promises as fsp } from "node:fs";
 import { join, resolve, relative, sep } from "node:path";
 import { URL } from "node:url";
