@@ -1,0 +1,33 @@
+app = "cursor-mcp-oauth"
+primary_region = "iad"
+kill_signal = "SIGINT"
+kill_timeout = 5
+
+[build]
+  image = "python:3.11-slim"
+
+[env]
+  WORKSPACE_DIR = "/workspace"
+  MCP_HTTP_REQUIRE_ORIGIN = "true"
+  ALLOWED_ORIGINS = "https://chatgpt.com,https://chat.openai.com"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8080
+  [[services.ports]]
+    port = 80
+  [[services.ports]]
+    port = 443
+
+[[statics]]
+  guest_path = "/app/public"
+  url_prefix = "/public"
+

@@ -1,0 +1,16 @@
+[build]
+  command = "pip install -r requirements.txt"
+  publish = "."
+
+[build.environment]
+  PYTHON_VERSION = "3.11"
+  WORKSPACE_DIR = "/workspace"
+  MCP_HTTP_REQUIRE_ORIGIN = "true"
+  ALLOWED_ORIGINS = "https://chatgpt.com,https://chat.openai.com"
+
+[[plugins]]
+  package = "@netlify/plugin-python"
+
+[functions]
+  directory = "netlify/functions"
+

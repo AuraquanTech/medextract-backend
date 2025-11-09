@@ -4,7 +4,8 @@
       "command": "python",
       "args": ["-u", "cursor_mcp_server.py"],
       "env": {
-        "WORKSPACE_DIR": "C:/absolute/path/to/your/workspace"
+        "WORKSPACE_DIR": "C:/path/to/your/workspace",
+        "MCP_AUDIT_LOG": "C:/path/to/your/workspace/.mcp_audit.log"
       }
     }
   }

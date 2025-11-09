@@ -64,6 +64,7 @@ export WORKSPACE_DIR=/path/to/workspace
 - `run_command` - Execute whitelisted commands
 - `get_diagnostics` - Health and security diagnostics
 - `search_code` - Regex search across codebase
+- `reset_context` - Reset context tracker (after large operations)
 
 ### Resources
 - `workspace_tree` - Full file tree
@@ -82,6 +83,55 @@ export WORKSPACE_DIR=/path/to/workspace
 - Command whitelist (git, npm, pytest, etc.)
 - File denylist (.env, .git, node_modules, etc.)
 - Audit logging (all operations logged)
+
+## 📊 Context Summarization
+
+**Auto-summarization at 85% context usage**
+
+The server automatically summarizes content when context usage reaches 85% of the maximum:
+
+- **Automatic**: Triggers at 85% threshold (configurable)
+- **Smart summarization**: Keeps important sections (headers, definitions, key patterns)
+- **Transparent**: Adds metadata headers showing original vs. summarized size
+- **Per-tool**: Works across `read_file`, `list_files`, `search_code`, and resources
+
+### How it works
+
+1. Tracks character count across all operations
+2. When usage reaches 85% of `MCP_CONTEXT_MAX_CHARS`, automatically summarizes
+3. Summarization strategy:
+   - **Text files**: Keeps first 20%, last 20%, summarizes middle 60% (keeps key patterns)
+   - **File lists**: Groups by extension, shows counts and top files
+   - **Search results**: Keeps top 5 files, summarizes others
+
+### Configuration
+
+```bash
+# Set max context size (default: 100,000 chars)
+export MCP_CONTEXT_MAX_CHARS=150000
+
+# Set threshold (default: 0.85 = 85%)
+export MCP_CONTEXT_SUMMARY_THRESHOLD=0.90
+
+# Disable summarization
+export MCP_CONTEXT_SUMMARY_ENABLED=false
+```
+
+### Monitoring
+
+Check context usage via `get_diagnostics`:
+```json
+{
+  "context": {
+    "max_chars": 100000,
+    "current_chars": 85000,
+    "usage_pct": 85.0,
+    "summary_threshold": 0.85,
+    "summarization_enabled": true,
+    "recent_summaries": [...]
+  }
+}
+```
 
 ## 🧪 Testing
 
@@ -106,7 +156,10 @@ pytest tests/
 
 - `WORKSPACE_DIR` - Workspace root directory (required)
 - `MCP_AUDIT_LOG` - Audit log path (default: `.mcp_audit.log`)
-- `MCP_MAX_FILE_BYTES` - Max file size (default: 1MB)
+- `MCP_MAX_FILE_BYTES` - Max file size (default: 2MB)
+- `MCP_CONTEXT_MAX_CHARS` - Max context size before summarization (default: 100,000 chars)
+- `MCP_CONTEXT_SUMMARY_THRESHOLD` - Threshold for auto-summarization (default: 0.85 = 85%)
+- `MCP_CONTEXT_SUMMARY_ENABLED` - Enable/disable auto-summarization (default: `true`)
 
 ### Rate Limits
 

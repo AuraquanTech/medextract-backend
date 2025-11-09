@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: cursor-mcp-oauth
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn http_mcp_oauth_bridge:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: WORKSPACE_DIR
+        value: /workspace
+      - key: AUTH_ISSUER
+        value: https://YOUR-TENANT.us.auth0.com/
+      - key: AUTH_AUDIENCE
+        value: https://cursor-mcp
+      - key: AUTH_JWKS_URL
+        value: https://YOUR-TENANT.us.auth0.com/.well-known/jwks.json
+      - key: MCP_HTTP_REQUIRE_ORIGIN
+        value: "true"
+      - key: ALLOWED_ORIGINS
+        value: https://chatgpt.com,https://chat.openai.com
+

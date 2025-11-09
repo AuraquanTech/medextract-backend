@@ -1,0 +1,52 @@
+[33mtag v1.0.0[m
+Tagger: AuraquanTech <aihubcenter@proton.me>
+Date:   Sat Nov 8 16:34:26 2025 -0500
+
+Version 1.0.0 - Initial release
+
+Full-featured Cursor MCP Server with:
+- Complete tool set (read, write, list, search, command execution)
+- Security hardening (sandboxing, rate limits, shell chaining protection)
+- Windows-friendly implementation
+- Comprehensive test suite
+- Full documentation
+
+[33mcommit 78606e8b2ff63861e6daf054292600e6dcbc7414[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmaster[m[33m, [m[1;33mtag: [m[1;33mv1.0.0[m[33m)[m
+Author: AuraquanTech <aihubcenter@proton.me>
+Date:   Sat Nov 8 16:34:25 2025 -0500
+
+    Initial commit: Cursor MCP Server v1.0.0
+    
+    Features:
+    - Full MCP server implementation with stdio transport
+    - Tools: read_file, list_files, write_file, run_command, get_diagnostics, search_code
+    - Resources: workspace_tree, workspace_summary, readme
+    - Prompts: code_review, debug_assistant, refactor_suggestion
+    - Security: workspace sandboxing, rate limiting, audit logging, command whitelist
+    - Enhanced security: shell chaining protection, strict fullmatch validation
+    - Expanded denylist: 24 patterns covering VCS, secrets, cloud configs
+    - Windows-friendly: no Bashisms, PowerShell/CMD compatible
+    
+    Configuration:
+    - ALLOWED_COMMANDS: 12 patterns (git, pytest, npm, ruff, black, mypy, eslint)
+    - READ_DENYLIST: 24 patterns (VCS, vendors, secrets, cloud configs)
+    - MAX_FILE_BYTES: 2MB default (configurable via env)
+    - Rate limits: 100 reads/hr, 50 writes/hr, 20 commands/hr
+
+ .gitignore                    |  36 [32m++++[m
+ BEST_PRACTICES.md             |  14 [32m++[m
+ PERF.md                       |  12 [32m++[m
+ README.md                     | 144 [32m++++++++++++++[m
+ SECURITY.md                   |  36 [32m++++[m
+ SETUP.md                      |  74 [32m++++++++[m
+ cursor_mcp_server.py          | 430 [32m++++++++++++++++++++++++++++++++++++++++++[m
+ health_check.py               |  32 [32m++++[m
+ mcp_config.json               |  12 [32m++[m
+ requirements.txt              |   5 [32m+[m
+ start_cursor_mcp.bat          |  14 [32m++[m
+ start_cursor_mcp.ps1          |  10 [32m+[m
+ start_cursor_mcp.sh           |  10 [32m+[m
+ tests/test_perf.py            |  20 [32m++[m
+ tests/test_security_limits.py |  14 [32m++[m
+ tests/test_tools_core.py      |  48 [32m+++++[m
+ 16 files changed, 911 insertions(+)
