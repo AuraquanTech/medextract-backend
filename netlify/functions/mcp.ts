@@ -454,16 +454,18 @@ export const handler: Handler = async (event) => {
           // This prevents hanging during ChatGPT's validation process
           if (toolName === "list_files" || toolName === "read_file") {
             // These tools might hang on inaccessible workspace - return fast
+            // Use 50ms fast path - if workspace is inaccessible, return immediately
+            const fastPath = new Promise((resolve) => {
+              setTimeout(() => {
+                if (toolName === "list_files") resolve([]);
+                else if (toolName === "read_file") resolve("File not accessible (ephemeral FS on Netlify)");
+              }, 50); // Very fast fallback
+            });
+            
             const fastResult = await Promise.race([
               tool.fn(body.params?.arguments || {}),
               timeoutPromise,
-              // Also add a fast path that returns immediately if workspace is inaccessible
-              new Promise((resolve) => {
-                setTimeout(() => {
-                  if (toolName === "list_files") resolve([]);
-                  else if (toolName === "read_file") resolve("File not accessible (ephemeral FS on Netlify)");
-                }, 100);
-              })
+              fastPath
             ]) as any;
             
             const elapsed_ms = Date.now() - startTime;
