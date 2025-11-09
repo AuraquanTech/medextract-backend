@@ -1,11 +1,18 @@
-// Netlify MCP bridge — No‑Auth (Origin + Rate Limit). Endpoints: /mcp, /mcp/health, /mcp/tool/:name
-// Drop in at: netlify/functions/mcp.ts
+/**
+ * Netlify MCP Server Function
+ * 
+ * Location: netlify/functions/mcp.ts
+ * 
+ * Complete implementation with all MCP tools (read_file, list_files, get_diagnostics, search_code)
+ */
 
-import type { Handler } from "@netlify/functions";
+import { Handler } from "@netlify/functions";
 import { minimatch } from "minimatch";
+import { promises as fs } from "fs";
+import { join, resolve, sep, posix } from "path";
 
 // ---------------------
-// Config (env‑driven)
+// Config (env-driven)
 // ---------------------
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "https://chatgpt.com,https://chat.openai.com")
   .split(",")
@@ -13,12 +20,12 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "https://chatgpt.com,htt
   .filter(Boolean);
 const REQUIRE_ORIGIN = (process.env.MCP_HTTP_REQUIRE_ORIGIN ?? "true").toLowerCase() !== "false";
 
-// Rate limiting (fixed window, in‑memory; resets as functions cold‑start)
+// Rate limiting (fixed window, in-memory; resets as functions cold-start)
 const RATE_WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS || 60_000);
 const RATE_MAX_REQ = Number(process.env.RATE_LIMIT_MAX_REQ || 300);
 const ipHits: Map<string, number[]> = new Map();
 
-// Workspace (read‑only in Netlify build image). We default to the repo root.
+// Workspace (read-only in Netlify build image). We default to the repo root.
 const WORKSPACE_ROOT = process.env.WORKSPACE_DIR || process.cwd();
 
 // Denylist for reads/listing to avoid secrets & heavy dirs
@@ -60,9 +67,6 @@ function rateGate(evt: any) {
 function isDenied(relPosix: string): boolean {
   return READ_DENYLIST.some((glob) => minimatch(relPosix, glob));
 }
-
-import { promises as fs } from "fs";
-import { join, resolve, sep, posix } from "path";
 
 function safeJoinWorkspace(...parts: string[]): string {
   const p = resolve(WORKSPACE_ROOT, ...parts);
@@ -133,10 +137,10 @@ async function tool_get_diagnostics() {
 }
 
 async function tool_write_file(_params: any) {
-  // Netlify Functions filesystem is ephemeral at runtime; prefer PR‑based writes.
+  // Netlify Functions filesystem is ephemeral at runtime; prefer PR-based writes.
   return {
     error: "NotImplemented",
-    message: "Use PR‑based writes via GitHub App in production. Ephemeral FS on Netlify."
+    message: "Use PR-based writes via GitHub App in production. Ephemeral FS on Netlify."
   };
 }
 
@@ -166,9 +170,9 @@ async function tool_search_code(params: { query: string; file_glob?: string; max
 
 // Registry
 const TOOLS: Record<string, { fn: (p: any) => Promise<any>; description: string; params: Record<string, string> }> = {
-  read_file: { fn: tool_read_file, description: "Read a UTF‑8 file", params: { path: "string", allow_denied_explicit: "boolean?" } },
+  read_file: { fn: tool_read_file, description: "Read a UTF-8 file", params: { path: "string", allow_denied_explicit: "boolean?" } },
   list_files: { fn: tool_list_files, description: "List files using glob", params: { base: "string?", pattern: "string?", max_results: "number?", include_denied: "boolean?", max_depth: "number?" } },
-  write_file: { fn: tool_write_file, description: "Write a file (PR‑based recommended)", params: { path: "string", content: "string" } },
+  write_file: { fn: tool_write_file, description: "Write a file (PR-based recommended)", params: { path: "string", content: "string" } },
   get_diagnostics: { fn: tool_get_diagnostics, description: "Health & limits", params: {} },
   search_code: { fn: tool_search_code, description: "Regex search across files", params: { query: "string", file_glob: "string?", max_results: "number?" } },
 };
