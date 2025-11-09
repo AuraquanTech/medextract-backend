@@ -1,16 +1,22 @@
 [build]
-  command = "pip install -r requirements.txt"
-  publish = "."
-
-[build.environment]
-  PYTHON_VERSION = "3.11"
-  WORKSPACE_DIR = "/workspace"
-  MCP_HTTP_REQUIRE_ORIGIN = "true"
-  ALLOWED_ORIGINS = "https://chatgpt.com,https://chat.openai.com"
-
-[[plugins]]
-  package = "@netlify/plugin-python"
+  # If you have no frontend build, leave command empty
+  command = ""
+  functions = "netlify/functions"
 
 [functions]
-  directory = "netlify/functions"
+  # Python runtime Netlify supports
+  python_runtime = "3.11"
 
+# Route all /mcp/* paths to the Python function
+[[redirects]]
+  from = "/mcp/*"
+  to = "/.netlify/functions/mcp/:splat"
+  status = 200
+  force = true
+
+# Optional: expose /metrics too (if you want a pretty path)
+[[redirects]]
+  from = "/metrics"
+  to = "/.netlify/functions/mcp/metrics"
+  status = 200
+  force = true

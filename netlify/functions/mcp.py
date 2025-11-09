@@ -1,22 +1,6 @@
-"""
-Netlify serverless function wrapper for OAuth MCP bridge.
-
-This wraps the FastAPI app for Netlify's serverless function environment.
-"""
-import os
-import sys
-from pathlib import Path
-
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
-
-from http_mcp_oauth_bridge import app
+# Netlify Python Function entrypoint (AWS Lambda style)
 from mangum import Mangum
+from http_mcp_oauth_bridge import app as fastapi_app
 
-# Wrap FastAPI app with Mangum for AWS Lambda/Netlify compatibility
-handler = Mangum(app)
-
-def lambda_handler(event, context):
-    """AWS Lambda handler for Netlify Functions."""
-    return handler(event, context)
-
+# If you used /mcp routes in your app, keep them. We'll route traffic there via redirects.
+handler = Mangum(fastapi_app)
