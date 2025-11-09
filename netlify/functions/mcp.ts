@@ -404,22 +404,35 @@ export const handler: Handler = async (event) => {
           };
         }
         try {
-          // Add timeout protection (5 seconds max for validation)
+          // Add timeout protection (3 seconds max for validation - ChatGPT has 60s total)
           const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error("Tool execution timeout")), 5000)
+            setTimeout(() => reject(new Error("Tool execution timeout (3s limit)")), 3000)
           );
+          
+          const startTime = Date.now();
           const result = await Promise.race([
             tool.fn(body.params?.arguments || {}),
             timeoutPromise,
           ]) as any;
           
-          const elapsed_ms = Date.now() - t0;
+          const elapsed_ms = Date.now() - startTime;
           console.log(`[MCP] tools/call ${toolName} - ${elapsed_ms}ms`);
           
-          // Format result according to MCP spec
-          const content = typeof result === "string" 
-            ? [{ type: "text", text: result }]
-            : [{ type: "text", text: JSON.stringify(result, null, 2) }];
+          // Format result according to MCP spec (content array with text items)
+          let content: Array<{ type: string; text: string }>;
+          if (typeof result === "string") {
+            content = [{ type: "text", text: result }];
+          } else if (Array.isArray(result)) {
+            // If result is already an array, use it directly
+            content = result.map((item: any) => 
+              typeof item === "string" 
+                ? { type: "text", text: item }
+                : { type: "text", text: JSON.stringify(item) }
+            );
+          } else {
+            // Object or other - stringify
+            content = [{ type: "text", text: JSON.stringify(result, null, 2) }];
+          }
           
           return {
             statusCode: 200,
@@ -433,6 +446,8 @@ export const handler: Handler = async (event) => {
         } catch (e: any) {
           const elapsed_ms = Date.now() - t0;
           console.error(`[MCP] tools/call ${toolName} error - ${elapsed_ms}ms`, e);
+          
+          // Return error in MCP format
           return {
             statusCode: 200,
             headers: { "content-type": "application/json", ...base },
